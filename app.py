@@ -7,6 +7,7 @@ import os
 import re
 import secrets
 import sqlite3
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -169,11 +170,8 @@ def restore_login_from_cookie():
     if st.session_state.get("authenticated"):
         return
 
-    cookie_manager = get_cookie_manager()
-    if cookie_manager is None:
-        return
-
-    username = verify_auth_token(cookie_manager.get(AUTH_COOKIE_NAME))
+    token = st.context.cookies.get(AUTH_COOKIE_NAME)
+    username = verify_auth_token(token)
     if not username:
         return
 
@@ -490,11 +488,15 @@ def reset_app_session():
             del st.session_state[key]
 
 
-def login_user(username, users):
+def login_user(username, users, remember_me=True):
     st.session_state.authenticated = True
     st.session_state.current_user = username
     st.session_state.current_display_name = users[username]["display_name"]
-    set_auth_cookie(username)
+    if remember_me:
+        set_auth_cookie(username)
+        time.sleep(0.2)
+    else:
+        clear_auth_cookie()
     reset_app_session()
     apply_user_state(load_user_state(username))
     st.rerun()
@@ -1174,6 +1176,7 @@ def render_auth_page():
                 with st.form("login_form"):
                     username = st.text_input("Username", placeholder="your username")
                     password = st.text_input("Password", type="password", placeholder="your password")
+                    remember_me = st.checkbox("Remember me", value=True)
                     submitted = st.form_submit_button("Login", use_container_width=True)
 
                     if submitted:
@@ -1187,7 +1190,7 @@ def render_auth_page():
                             st.error("Incorrect password.")
                         else:
                             st.success("Login successful.")
-                            login_user(normalized_username, users)
+                            login_user(normalized_username, users, remember_me)
 
                 st.markdown("<p style='text-align:center;margin:0.8rem 0 0.4rem;'>New here?</p>", unsafe_allow_html=True)
                 if st.button("Create a new account", use_container_width=True):
@@ -1240,7 +1243,7 @@ def render_auth_page():
                             }
                             save_users(users)
                             st.success("Account created. Taking you into the Forge.")
-                            login_user(normalized_username, users)
+                            login_user(normalized_username, users, True)
 
                 if st.button("Back to login", use_container_width=True):
                     st.session_state.auth_view = "login"
