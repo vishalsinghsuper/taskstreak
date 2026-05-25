@@ -102,7 +102,9 @@ def get_auth_secret():
 def get_cookie_manager():
     if stx is None:
         return None
-    return stx.CookieManager()
+    if "cookie_manager" not in st.session_state:
+        st.session_state.cookie_manager = stx.CookieManager(key="streakforge_cookie_manager")
+    return st.session_state.cookie_manager
 
 
 def make_auth_token(username):
