@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*.log
+*.err.log
+*.out.log
+.streamlit/secrets.toml
+streakforge_users.json
+.env
+.venv/
+venv/
