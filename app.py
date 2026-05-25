@@ -7,14 +7,17 @@ import os
 import re
 import secrets
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 
 import streamlit as st
 
 try:
     import psycopg2
+    from psycopg2 import pool
 except ImportError:
     psycopg2 = None
+    pool = None
 
 
 about_text = """
@@ -92,13 +95,38 @@ def db_placeholder():
     return "%s" if using_postgres() else "?"
 
 
+@st.cache_resource(show_spinner=False)
+def get_postgres_pool(database_url):
+    if psycopg2 is None or pool is None:
+        raise RuntimeError("Install psycopg2-binary to use Supabase/Postgres.")
+    return pool.SimpleConnectionPool(1, 5, database_url, sslmode="require")
+
+
+@contextmanager
 def get_db():
     database_url = get_database_url()
     if database_url:
-        if psycopg2 is None:
-            raise RuntimeError("Install psycopg2-binary to use Supabase/Postgres.")
-        return psycopg2.connect(database_url, sslmode="require")
-    return sqlite3.connect(DB_PATH)
+        postgres_pool = get_postgres_pool(database_url)
+        conn = postgres_pool.getconn()
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            postgres_pool.putconn(conn)
+        return
+
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def db_execute(sql, params=()):
@@ -128,7 +156,8 @@ def db_fetchone(sql, params=()):
         return conn.execute(sql, params).fetchone()
 
 
-def init_database():
+@st.cache_resource(show_spinner=False)
+def ensure_database_ready(database_key):
     db_execute(
         """
         CREATE TABLE IF NOT EXISTS users (
@@ -152,6 +181,11 @@ def init_database():
     )
 
     migrate_json_users_to_db()
+    return True
+
+
+def init_database():
+    ensure_database_ready(get_database_url() or str(DB_PATH))
 
 
 def migrate_json_users_to_db():
@@ -990,7 +1024,6 @@ def reset_forge():
 
 
 def render_auth_page():
-    users = load_users()
     left_col, right_col = st.columns([0.58, 0.42], gap="large", vertical_alignment="center")
 
     with left_col:
@@ -1028,6 +1061,7 @@ def render_auth_page():
                     submitted = st.form_submit_button("Login", use_container_width=True)
 
                     if submitted:
+                        users = load_users()
                         normalized_username = username.strip().lower()
                         if not normalized_username or not password:
                             st.warning("Enter your username and password.")
@@ -1063,6 +1097,7 @@ def render_auth_page():
                     submitted = st.form_submit_button("Create Account", use_container_width=True)
 
                     if submitted:
+                        users = load_users()
                         normalized_username = new_username.strip().lower()
                         clean_email = email.strip().lower()
 
