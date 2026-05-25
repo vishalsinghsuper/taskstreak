@@ -7,7 +7,6 @@ import os
 import re
 import secrets
 import sqlite3
-import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -162,7 +161,6 @@ def clear_auth_cookie():
     cookie_manager = get_cookie_manager()
     if cookie_manager is None:
         return
-
     cookie_manager.delete(AUTH_COOKIE_NAME)
 
 
@@ -175,14 +173,14 @@ def restore_login_from_cookie():
     if not username:
         return
 
-    users = load_users()
-    if username not in users:
+    user_data = get_user(username)
+    if not user_data:
         clear_auth_cookie()
         return
 
     st.session_state.authenticated = True
     st.session_state.current_user = username
-    st.session_state.current_display_name = users[username]["display_name"]
+    st.session_state.current_display_name = user_data["display_name"]
     reset_app_session()
     apply_user_state(load_user_state(username))
 
@@ -295,7 +293,6 @@ def init_database():
 def migrate_json_users_to_db():
     if not USER_STORE.exists():
         return
-
     try:
         with USER_STORE.open("r", encoding="utf-8") as file:
             old_users = json.load(file)
@@ -322,47 +319,33 @@ def migrate_json_users_to_db():
             ),
         )
 
-
-def load_users():
+# OPTIMIZED: Fetching a single user instead of loading the entire table
+def get_user(username):
     init_database()
-    rows = db_fetchall("SELECT username, display_name, email, password, created_at FROM users ORDER BY username")
-
-    return {
-        username: {
-            "display_name": display_name,
-            "email": email,
-            "password": password,
-            "created_at": created_at,
+    row = db_fetchone(
+        "SELECT display_name, email, password, created_at FROM users WHERE username = " + db_placeholder(), 
+        (username,)
+    )
+    if row:
+        return {
+            "display_name": row[0],
+            "email": row[1],
+            "password": row[2],
+            "created_at": row[3]
         }
-        for username, display_name, email, password, created_at in rows
-    }
+    return None
 
-
-def save_users(users):
+def email_exists(email):
     init_database()
-    placeholder = db_placeholder()
-    sql = (
-        """
-        INSERT INTO users (username, display_name, email, password, created_at)
-        VALUES ({0}, {0}, {0}, {0}, {0})
-        ON CONFLICT(username) DO UPDATE SET
-            display_name = excluded.display_name,
-            email = excluded.email,
-            password = excluded.password,
-            created_at = excluded.created_at
-        """
-    ).format(placeholder)
-    for username, user in users.items():
-        db_execute(
-            sql,
-            (
-                username,
-                user["display_name"],
-                user["email"],
-                user["password"],
-                user["created_at"],
-            ),
-        )
+    row = db_fetchone("SELECT 1 FROM users WHERE email = " + db_placeholder(), (email,))
+    return bool(row)
+
+def create_user(username, display_name, email, password_hash):
+    init_database()
+    created_at = datetime.datetime.now().isoformat(timespec="seconds")
+    sql = f"INSERT INTO users (username, display_name, email, password, created_at) VALUES ({db_placeholder()}, {db_placeholder()}, {db_placeholder()}, {db_placeholder()}, {db_placeholder()})"
+    db_execute(sql, (username, display_name, email, password_hash, created_at))
+    return {"display_name": display_name, "email": email, "password": password_hash, "created_at": created_at}
 
 
 def default_user_state():
@@ -488,13 +471,12 @@ def reset_app_session():
             del st.session_state[key]
 
 
-def login_user(username, users, remember_me=True):
+def login_user(username, user_data, remember_me=True):
     st.session_state.authenticated = True
     st.session_state.current_user = username
-    st.session_state.current_display_name = users[username]["display_name"]
+    st.session_state.current_display_name = user_data["display_name"]
     if remember_me:
-        set_auth_cookie(username)
-        time.sleep(0.2)
+        set_auth_cookie(username) # Artificial sleep removed for instant load
     else:
         clear_auth_cookie()
     reset_app_session()
@@ -584,6 +566,7 @@ def inject_styles():
             --forge-amber: #f59e0b;
         }
 
+        /* PWA Touch Optimizations */
         html, body, [data-testid="stAppViewContainer"] {
             min-height: 100%;
             color: var(--forge-text);
@@ -592,6 +575,8 @@ def inject_styles():
                 radial-gradient(circle at top left, rgba(139, 92, 246, 0.28), transparent 34rem),
                 radial-gradient(circle at bottom right, rgba(245, 158, 11, 0.12), transparent 30rem),
                 linear-gradient(135deg, #160923 0%, #211039 48%, #12091f 100%);
+            touch-action: manipulation;
+            -webkit-tap-highlight-color: transparent;
         }
 
         [data-testid="stHeader"], [data-testid="stToolbar"] {
@@ -607,6 +592,7 @@ def inject_styles():
             background: rgba(255, 255, 255, 0.055);
             border-right: 1px solid var(--forge-border);
             backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
         }
 
         [data-testid="stSidebar"] > div:first-child {
@@ -712,6 +698,7 @@ def inject_styles():
             border-radius: 18px;
             box-shadow: 0 24px 70px rgba(0, 0, 0, 0.2);
             backdrop-filter: blur(14px);
+            -webkit-backdrop-filter: blur(14px);
         }
 
         .auth-shell {
@@ -889,36 +876,6 @@ def inject_styles():
             max-width: 30rem;
         }
 
-        .habit-card {
-            display: flex;
-            align-items: center;
-            gap: 0.9rem;
-            padding: 0.95rem 1rem;
-            margin-bottom: 0.65rem;
-        }
-
-        .habit-card.done .habit-text {
-            color: #a7a0b8;
-            text-decoration: line-through;
-        }
-
-        .habit-pill {
-            flex: 0 0 auto;
-            border-radius: 999px;
-            padding: 0.25rem 0.65rem;
-            font-size: 0.74rem;
-            font-weight: 800;
-            border: 1px solid rgba(255, 255, 255, 0.14);
-            background: rgba(255, 255, 255, 0.07);
-        }
-
-        .habit-text {
-            min-width: 0;
-            color: #fff;
-            font-weight: 700;
-            overflow-wrap: anywhere;
-        }
-
         [data-testid="stTabs"] div[role="tablist"],
         div[data-baseweb="tab-list"] {
             gap: 0.85rem;
@@ -929,6 +886,7 @@ def inject_styles():
             border-radius: 18px;
             box-shadow: 0 22px 60px rgba(0, 0, 0, 0.22);
             backdrop-filter: blur(14px);
+            -webkit-backdrop-filter: blur(14px);
         }
 
         [data-testid="stTabs"] button[role="tab"],
@@ -980,6 +938,7 @@ def inject_styles():
             border: 1px solid var(--forge-border);
             border-radius: 18px;
             backdrop-filter: blur(14px);
+            -webkit-backdrop-filter: blur(14px);
         }
 
         [data-testid="stForm"] {
@@ -993,11 +952,6 @@ def inject_styles():
             background: rgba(255, 255, 255, 0.06);
             border: 1px solid rgba(255, 255, 255, 0.12);
             border-radius: 14px;
-        }
-
-        [data-testid="stTextInput"] input::placeholder,
-        [data-testid="stTextArea"] textarea::placeholder {
-            color: #8f86a3;
         }
 
         .stButton > button,
@@ -1028,27 +982,12 @@ def inject_styles():
             line-height: 1.15;
         }
 
-        [data-testid="stProgress"] > div > div {
-            background: rgba(255, 255, 255, 0.09);
-        }
-
-        [data-testid="stProgress"] [role="progressbar"] {
-            background: linear-gradient(90deg, #8b5cf6, #f59e0b);
-        }
-
-        .stAlert {
-            background: rgba(255, 255, 255, 0.065);
-            border: 1px solid var(--forge-border);
-            border-radius: 16px;
-        }
-
-        hr {
-            border-color: rgba(255, 255, 255, 0.11);
-        }
-
+        /* ------------------------------------- */
+        /* MOBILE PWA BREAKPOINT                 */
+        /* ------------------------------------- */
         @media (max-width: 900px) {
             [data-testid="stAppViewBlockContainer"] {
-                padding: 1rem;
+                padding: 1rem 1rem 7rem; /* Added bottom padding to prevent nav overlap */
             }
 
             .auth-shell {
@@ -1071,6 +1010,36 @@ def inject_styles():
             .empty-orb {
                 width: 6.5rem;
                 height: 6.5rem;
+            }
+            
+            /* PWA Bottom Navigation Bar Override */
+            [data-testid="stTabs"] div[role="tablist"] {
+                position: fixed;
+                bottom: 0;
+                left: 0;
+                right: 0;
+                z-index: 9999;
+                margin: 0;
+                padding: 0.6rem 0.5rem 1.6rem; /* Extra padding for iOS bottom indicator line */
+                border-radius: 24px 24px 0 0;
+                background: rgba(20, 10, 35, 0.95);
+                border-top: 1px solid rgba(255, 255, 255, 0.15);
+                box-shadow: 0 -10px 40px rgba(0, 0, 0, 0.6);
+                gap: 0.3rem;
+            }
+
+            [data-testid="stTabs"] button[role="tab"] {
+                min-height: 3.2rem;
+                padding: 0.4rem;
+                flex-direction: column;
+                gap: 0.2rem;
+            }
+
+            [data-testid="stTabs"] button[role="tab"] p {
+                font-size: 0.8rem;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
             }
         }
         </style>
@@ -1180,17 +1149,20 @@ def render_auth_page():
                     submitted = st.form_submit_button("Login", use_container_width=True)
 
                     if submitted:
-                        users = load_users()
                         normalized_username = username.strip().lower()
                         if not normalized_username or not password:
                             st.warning("Enter your username and password.")
-                        elif normalized_username not in users:
-                            st.error("No account found with that username.")
-                        elif not verify_password(password, users[normalized_username]["password"]):
-                            st.error("Incorrect password.")
                         else:
-                            st.success("Login successful.")
-                            login_user(normalized_username, users, remember_me)
+                            # OPTIMIZED DATABASE CALL
+                            user_data = get_user(normalized_username)
+                            
+                            if not user_data:
+                                st.error("No account found with that username.")
+                            elif not verify_password(password, user_data["password"]):
+                                st.error("Incorrect password.")
+                            else:
+                                st.success("Login successful.")
+                                login_user(normalized_username, user_data, remember_me)
 
                 st.markdown("<p style='text-align:center;margin:0.8rem 0 0.4rem;'>New here?</p>", unsafe_allow_html=True)
                 if st.button("Create a new account", use_container_width=True):
@@ -1216,7 +1188,6 @@ def render_auth_page():
                     submitted = st.form_submit_button("Create Account", use_container_width=True)
 
                     if submitted:
-                        users = load_users()
                         normalized_username = new_username.strip().lower()
                         clean_email = email.strip().lower()
 
@@ -1224,26 +1195,26 @@ def render_auth_page():
                             st.warning("Fill in all signup fields.")
                         elif not re.fullmatch(r"[a-z0-9_]{3,20}", normalized_username):
                             st.error("Username must be 3-20 characters using lowercase letters, numbers, or underscore.")
-                        elif normalized_username in users:
+                        elif get_user(normalized_username): # OPTIMIZED
                             st.error("That username is already taken.")
                         elif not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", clean_email):
                             st.error("Enter a valid email address.")
-                        elif any(user.get("email") == clean_email for user in users.values()):
+                        elif email_exists(clean_email): # OPTIMIZED
                             st.error("An account already exists with that email.")
                         elif len(new_password) < 6:
                             st.error("Password must be at least 6 characters.")
                         elif new_password != confirm_password:
                             st.error("Passwords do not match.")
                         else:
-                            users[normalized_username] = {
-                                "display_name": display_name.strip(),
-                                "email": clean_email,
-                                "password": hash_password(new_password),
-                                "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
-                            }
-                            save_users(users)
+                            # OPTIMIZED DB INSERT
+                            user_data = create_user(
+                                normalized_username, 
+                                display_name.strip(), 
+                                clean_email, 
+                                hash_password(new_password)
+                            )
                             st.success("Account created. Taking you into the Forge.")
-                            login_user(normalized_username, users, True)
+                            login_user(normalized_username, user_data, True)
 
                 if st.button("Back to login", use_container_width=True):
                     st.session_state.auth_view = "login"
