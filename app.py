@@ -13,6 +13,11 @@ from pathlib import Path
 import streamlit as st
 
 try:
+    import extra_streamlit_components as stx
+except ImportError:
+    stx = None
+
+try:
     import psycopg2
     from psycopg2 import pool
 except ImportError:
@@ -44,6 +49,8 @@ PILLARS = {
 
 USER_STORE = Path(__file__).with_name("streakforge_users.json")
 DB_PATH = Path(__file__).with_name("streakforge.db")
+AUTH_COOKIE_NAME = "streakforge_auth"
+AUTH_COOKIE_DAYS = 30
 APP_STATE_KEYS = [
     "habits",
     "active_pillar",
@@ -81,6 +88,104 @@ def get_config_value(name):
         return st.secrets.get(name)
     except Exception:
         return None
+
+
+def get_auth_secret():
+    return (
+        get_config_value("AUTH_COOKIE_SECRET")
+        or get_config_value("COOKIE_SECRET")
+        or get_database_url()
+        or "streakforge-local-dev-secret"
+    )
+
+
+@st.cache_resource(show_spinner=False)
+def get_cookie_manager():
+    if stx is None:
+        return None
+    return stx.CookieManager()
+
+
+def make_auth_token(username):
+    expires_at = int(
+        (datetime.datetime.now() + datetime.timedelta(days=AUTH_COOKIE_DAYS)).timestamp()
+    )
+    payload = f"{username}|{expires_at}"
+    signature = hmac.new(
+        get_auth_secret().encode("utf-8"),
+        payload.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"{payload}|{signature}"
+
+
+def verify_auth_token(token):
+    if not token:
+        return None
+
+    try:
+        username, expires_at, signature = token.split("|", 2)
+        expires_at = int(expires_at)
+    except (ValueError, TypeError):
+        return None
+
+    if expires_at < int(datetime.datetime.now().timestamp()):
+        return None
+
+    payload = f"{username}|{expires_at}"
+    expected_signature = hmac.new(
+        get_auth_secret().encode("utf-8"),
+        payload.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(signature, expected_signature):
+        return None
+
+    return username
+
+
+def set_auth_cookie(username):
+    cookie_manager = get_cookie_manager()
+    if cookie_manager is None:
+        return
+
+    cookie_manager.set(
+        AUTH_COOKIE_NAME,
+        make_auth_token(username),
+        expires_at=datetime.datetime.now() + datetime.timedelta(days=AUTH_COOKIE_DAYS),
+    )
+
+
+def clear_auth_cookie():
+    cookie_manager = get_cookie_manager()
+    if cookie_manager is None:
+        return
+
+    cookie_manager.delete(AUTH_COOKIE_NAME)
+
+
+def restore_login_from_cookie():
+    if st.session_state.get("authenticated"):
+        return
+
+    cookie_manager = get_cookie_manager()
+    if cookie_manager is None:
+        return
+
+    username = verify_auth_token(cookie_manager.get(AUTH_COOKIE_NAME))
+    if not username:
+        return
+
+    users = load_users()
+    if username not in users:
+        clear_auth_cookie()
+        return
+
+    st.session_state.authenticated = True
+    st.session_state.current_user = username
+    st.session_state.current_display_name = users[username]["display_name"]
+    reset_app_session()
+    apply_user_state(load_user_state(username))
 
 
 def get_database_url():
@@ -388,12 +493,14 @@ def login_user(username, users):
     st.session_state.authenticated = True
     st.session_state.current_user = username
     st.session_state.current_display_name = users[username]["display_name"]
+    set_auth_cookie(username)
     reset_app_session()
     apply_user_state(load_user_state(username))
     st.rerun()
 
 
 def logout_user():
+    clear_auth_cookie()
     st.session_state.authenticated = False
     st.session_state.current_user = None
     st.session_state.current_display_name = ""
@@ -1498,6 +1605,7 @@ def render_archive():
 
 
 inject_styles()
+restore_login_from_cookie()
 
 if not st.session_state.authenticated:
     render_auth_page()
