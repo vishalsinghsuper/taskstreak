@@ -99,7 +99,6 @@ def get_auth_secret():
     )
 
 
-@st.cache_resource(show_spinner=False)
 def get_cookie_manager():
     if stx is None:
         return None
