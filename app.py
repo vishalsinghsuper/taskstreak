@@ -527,8 +527,16 @@ def can_edit_forge():
     return datetime.datetime.now().time() < datetime.time(22, 0)
 
 
+def created_after_edit_cutoff():
+    return not can_edit_forge()
+
+
+def can_change_list_item(item):
+    return can_edit_forge() or item.get("created_after_edit_cutoff", False)
+
+
 def show_after_10_warning(area):
-    st.warning(f"{area} edits are locked after 10:00 PM.")
+    st.warning(f"{area} items created before 10:00 PM cannot be edited or deleted after 10:00 PM.")
 
 
 def clear_event_edit_state():
@@ -1317,7 +1325,6 @@ def render_header():
 
 
 def render_forge():
-    forge_edit_open = can_edit_forge()
     active_index = list(PILLARS).index(st.session_state.active_pillar)
     selected = st.radio(
         "Select Pillar",
@@ -1344,15 +1351,14 @@ def render_forge():
             submitted = st.form_submit_button("+ Add", use_container_width=True)
 
         if submitted:
-            if not forge_edit_open:
-                show_after_10_warning("Forge list")
-            elif new_habit.strip():
+            if new_habit.strip():
                 st.session_state.habits.append(
                     {
                         "id": len(st.session_state.habits),
                         "text": new_habit.strip(),
                         "pillar": st.session_state.active_pillar,
                         "done": False,
+                        "created_after_edit_cutoff": created_after_edit_cutoff(),
                     }
                 )
                 save_current_user_state()
@@ -1378,6 +1384,8 @@ def render_forge():
     st.progress(completed / total, text=f"Daily Progress: {completed}/{total} Completed")
 
     for i, habit in enumerate(st.session_state.habits):
+        habit.setdefault("created_after_edit_cutoff", False)
+        item_can_change = can_change_list_item(habit)
         col1, col2, col3 = st.columns([0.72, 0.14, 0.14], vertical_alignment="center")
         with col1:
             checked = st.checkbox(
@@ -1388,14 +1396,14 @@ def render_forge():
         with col2:
             edit_label = "Close" if st.session_state.get(f"edit_hbt_{i}", False) else "Edit"
             if st.button(edit_label, key=f"edit_btn_hbt_{i}", use_container_width=True):
-                if not forge_edit_open:
+                if not item_can_change:
                     show_after_10_warning("Forge list")
                 else:
                     st.session_state[f"edit_hbt_{i}"] = not st.session_state.get(f"edit_hbt_{i}", False)
                     st.rerun()
         with col3:
             if st.button("Delete", key=f"del_hbt_{i}", use_container_width=True):
-                if not forge_edit_open:
+                if not item_can_change:
                     show_after_10_warning("Forge list")
                 else:
                     st.session_state.habits.pop(i)
@@ -1424,7 +1432,7 @@ def render_forge():
                     st.rerun()
 
                 if save_edit:
-                    if not forge_edit_open:
+                    if not item_can_change:
                         show_after_10_warning("Forge list")
                     elif edit_text.strip():
                         st.session_state.habits[i]["text"] = edit_text.strip()
@@ -1434,8 +1442,6 @@ def render_forge():
 
 
 def render_events():
-    event_edit_open = can_edit_forge()
-
     with st.expander("+ Add New Event", expanded=not st.session_state.events):
         with st.form("event_form", clear_on_submit=True):
             evt_title = st.text_input("Event Name", placeholder="e.g., Submit Assignment")
@@ -1447,9 +1453,7 @@ def render_events():
 
             submitted = st.form_submit_button("Post Event", use_container_width=True)
             if submitted:
-                if not event_edit_open:
-                    show_after_10_warning("Event Board")
-                elif evt_title.strip():
+                if evt_title.strip():
                     st.session_state.events.append(
                         {
                             "id": len(st.session_state.events) + len(st.session_state.history),
@@ -1457,6 +1461,7 @@ def render_events():
                             "deadline": evt_date if "Timelined" in evt_type else None,
                             "done": False,
                             "done_date": None,
+                            "created_after_edit_cutoff": created_after_edit_cutoff(),
                         }
                     )
                     st.toast("Event posted.", icon="📌")
@@ -1468,6 +1473,8 @@ def render_events():
         return
 
     for i, evt in enumerate(st.session_state.events):
+        evt.setdefault("created_after_edit_cutoff", False)
+        item_can_change = can_change_list_item(evt)
         date_str = f"Due: {evt['deadline'].strftime('%b %d, %Y')}" if evt["deadline"] else "Timeless"
         col1, col2, col3 = st.columns([0.72, 0.14, 0.14], vertical_alignment="center")
         with col1:
@@ -1479,14 +1486,14 @@ def render_events():
         with col2:
             edit_label = "Close" if st.session_state.get(f"edit_evt_{evt['id']}", False) else "Edit"
             if st.button(edit_label, key=f"edit_btn_evt_{evt['id']}", use_container_width=True):
-                if not event_edit_open:
+                if not item_can_change:
                     show_after_10_warning("Event Board")
                 else:
                     st.session_state[f"edit_evt_{evt['id']}"] = not st.session_state.get(f"edit_evt_{evt['id']}", False)
                     st.rerun()
         with col3:
             if st.button("Delete", key=f"del_evt_{evt['id']}", use_container_width=True):
-                if not event_edit_open:
+                if not item_can_change:
                     show_after_10_warning("Event Board")
                 else:
                     st.session_state.events.pop(i)
@@ -1533,7 +1540,7 @@ def render_events():
                     st.rerun()
 
                 if save_edit:
-                    if not event_edit_open:
+                    if not item_can_change:
                         show_after_10_warning("Event Board")
                     elif edit_title.strip():
                         st.session_state.events[i]["text"] = edit_title.strip()
